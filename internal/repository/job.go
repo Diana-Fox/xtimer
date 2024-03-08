@@ -45,23 +45,29 @@ func (c *CronJobRepository) Register(ctx context.Context, job domain.Job) error 
 }
 
 func (c *CronJobRepository) Preempt(ctx context.Context) (domain.Job, error) {
-	mx.Lock()
-	mx.Unlock()
 	if JOBS.Len() > 1 {
 		//去取值
 		job := JOBS.Front().Value.(dao.Job)
 		return c.dao2domain(job), nil
 	}
-	//说明没有任务了，去数据库拿
+	//把锁往后面放放，因为在分布式的情况下，
+	//本来同一个任务可能被，抢好几次
+	//所以没必要在前面加锁，因为根据version会判断能否成功的
+	mx.Lock()
+	mx.Unlock()
+	//说明没有任务了，去数据库拿，只让一个线程去就行了
 	for {
-		JOBS = c.dao.Preempt(ctx)
+		//防止上一轮已经查出来了，有点双层锁的意思
 		if JOBS.Len() > 1 {
 			//能到这，说明有了
 			job := JOBS.Front().Value.(dao.Job)
 			return c.dao2domain(job), nil
 		}
-		//说明没查到，在这歇歇
-		time.Sleep(time.Second)
+		JOBS = c.dao.Preempt(ctx)
+		if JOBS.Len() == 0 {
+			//说明没查到，在这歇歇
+			time.Sleep(time.Second)
+		}
 	}
 }
 func (c *CronJobRepository) dao2domain(d dao.Job) domain.Job {
